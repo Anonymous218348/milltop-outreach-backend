@@ -1,4 +1,6 @@
-const sgMail = require('@sendgrid/mail');
+const axios = require('axios');
+const nodemailer = require('nodemailer');
+const crypto = require('crypto');
 const db = require('../db');
 const { delay } = require('../utils/delay');
 const { getSettings } = require('./settings.service');
@@ -29,30 +31,11 @@ const personalize = (text, data = {}) => {
   return out;
 };
 
-const getSendgridConfig = async (userId) => {
-  const settings = await getSettings(userId);
-
-  if (!settings || !settings.sendgrid_api_key) {
-    throw new Error('SendGrid API key is required in Settings');
-  }
-  if (!settings.sendgrid_from) {
-    throw new Error('A verified sender email (sendgrid_from) is required in Settings');
-  }
-
-  sgMail.setApiKey(settings.sendgrid_api_key);
-
-  return {
-    from: settings.sendgrid_from,
-    fromName: settings.sendgrid_name || 'Milltop Tech',
-    templateId: settings.sendgrid_template_id || null
-  };
-};
-
-const logEmail = async ({ userId, storeId, contactId, campaignId, subject, body, status, sentAt, storeName, toEmail }) => {
+const logEmail = async ({ userId, storeId, contactId, campaignId, subject, body, status, sentAt, storeName, toEmail, provider, providerMessageId }) => {
   const { rows } = await db.query(
     `INSERT INTO email_logs 
-    (user_id, store_id, contact_id, campaign_id, subject, body, status, sent_at, store_name, to_email)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+    (user_id, store_id, contact_id, campaign_id, subject, body, status, sent_at, store_name, to_email, provider, provider_message_id)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
     RETURNING *`,
     [
       userId,
@@ -64,14 +47,67 @@ const logEmail = async ({ userId, storeId, contactId, campaignId, subject, body,
       status,
       sentAt || null,
       storeName || null,
-      toEmail || null
+      toEmail || null,
+      provider || null,
+      providerMessageId || null
     ]
   );
   return rows[0];
 };
 
-const sendOne = async ({ userId, to, subject, body, storeId, contactId, campaignId, storeName, data = {} }) => {
-  const { from, fromName, templateId } = await getSendgridConfig(userId);
+const deliver = async ({ settings, accounts, fromAccount, to, subject, body }) => {
+  const messageId = `<${crypto.randomUUID()}@commandcore.milltoptech>`;
+  const selectedAccount = accounts.find(account => account.email === fromAccount) || (accounts.length === 1 ? accounts[0] : null);
+  const provider = settings.email_provider || (selectedAccount ? 'gmail' : settings.sendgrid_api_key ? 'sendgrid' : settings.mailgun_api_key ? 'mailgun' : 'gmail');
+
+  if (provider === 'gmail') {
+    if (!selectedAccount) throw new Error(accounts.length ? 'Select a Gmail account to send from' : 'Gmail is selected. Add a Gmail account and App Password in Settings first.');
+    if (!selectedAccount.pass) throw new Error(`SMTP password is missing for ${selectedAccount.email}; remove and add the account again`);
+    const transporter = nodemailer.createTransport({
+      host: 'smtp.gmail.com', port: 465, secure: true,
+      auth: { user: selectedAccount.email, pass: selectedAccount.pass }
+    });
+    await transporter.sendMail({ from: selectedAccount.email, to, subject, text: body.replace(/<[^>]*>/g, ''), html: body, messageId });
+    return { provider: 'gmail', from: selectedAccount.email, messageId };
+  }
+
+  if (provider === 'sendgrid') {
+    if (!settings.sendgrid_api_key) throw new Error('SendGrid is selected. Add your SendGrid API key in Settings first.');
+    if (!settings.sendgrid_from) throw new Error('A verified sender email is required for SendGrid');
+    const message = {
+      personalizations: [{ to: [{ email: to }] }],
+      from: { email: settings.sendgrid_from, name: settings.sendgrid_name || 'Milltop Tech' },
+      subject,
+      headers: { 'Message-ID': messageId },
+      content: [{ type: 'text/plain', value: body.replace(/<[^>]*>/g, '') }, { type: 'text/html', value: body }]
+    };
+    if (settings.sendgrid_template_id) {
+      message.template_id = settings.sendgrid_template_id;
+      message.dynamic_template_data = { subject, message: body };
+      delete message.content;
+    }
+    await axios.post('https://api.sendgrid.com/v3/mail/send', message, {
+      headers: { Authorization: `Bearer ${settings.sendgrid_api_key}`, 'Content-Type': 'application/json' }, timeout: 15000
+    });
+    return { provider: 'sendgrid', from: settings.sendgrid_from, messageId };
+  }
+
+  if (provider === 'mailgun' && settings.mailgun_api_key && settings.mailgun_domain && settings.mailgun_from) {
+    const params = new URLSearchParams({ from: settings.mailgun_from, to, subject, text: body.replace(/<[^>]*>/g, ''), html: body, 'h:Message-Id': messageId });
+    await axios.post(`https://api.mailgun.net/v3/${encodeURIComponent(settings.mailgun_domain)}/messages`, params, {
+      auth: { username: 'api', password: settings.mailgun_api_key },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15000
+    });
+    return { provider: 'mailgun', from: settings.mailgun_from, messageId };
+  }
+
+  if (provider === 'mailgun') throw new Error('Mailgun is selected. Complete its configuration in Settings first.');
+  throw new Error('Choose Gmail or SendGrid in Settings before sending.');
+};
+
+const sendOne = async ({ userId, to, subject, body, storeId, contactId, campaignId, storeName, data = {}, fromAccount }) => {
+  const settings = await getSettings(userId) || {};
+  const accounts = Array.isArray(settings.gmail_accounts) ? settings.gmail_accounts : [];
 
   // Merge storeName into data so personalize() works for all formats
   const mergedData = {
@@ -85,34 +121,12 @@ const sendOne = async ({ userId, to, subject, body, storeId, contactId, campaign
   const personalizedSubject = personalize(subject, mergedData);
   const personalizedBody = personalize(body, mergedData);
 
-  let message;
-
-  if (templateId) {
-    // SendGrid dynamic template — pass personalized content as template variables.
-    // subject must also be set at top level for deliverability even when template
-    // has its own subject field, because some ESPs require it.
-    message = {
-      to,
-      from: { email: from, name: fromName },
-      subject: personalizedSubject, // top-level subject (required by some clients)
-      templateId,
-      dynamicTemplateData: {
-        subject: personalizedSubject, // maps to {{subject}} in your template
-        message: personalizedBody     // maps to {{message}} in your template
-      }
-    };
-  } else {
-    message = {
-      to,
-      from: { email: from, name: fromName },
-      subject: personalizedSubject,
-      text: personalizedBody.replace(/<[^>]*>/g, ''),
-      html: personalizedBody
-    };
-  }
-
+  let provider = 'unknown';
+  let providerMessageId = null;
   try {
-    await sgMail.send(message);
+    const delivery = await deliver({ settings, accounts, fromAccount, to, subject: personalizedSubject, body: personalizedBody });
+    provider = delivery.provider;
+    providerMessageId = delivery.messageId;
 
     return logEmail({
       userId,
@@ -124,7 +138,9 @@ const sendOne = async ({ userId, to, subject, body, storeId, contactId, campaign
       status: 'sent',
       sentAt: new Date(),
       storeName,
-      toEmail: to
+      toEmail: to,
+      provider,
+      providerMessageId
     });
 
   } catch (error) {
@@ -140,7 +156,9 @@ const sendOne = async ({ userId, to, subject, body, storeId, contactId, campaign
         body: personalizedBody,
         status: `failed: ${errMsg}`,
         storeName,
-        toEmail: to
+        toEmail: to,
+        provider,
+        providerMessageId
       });
     } catch (logError) {
       console.error('Failed to log email failure:', logError);
@@ -150,7 +168,7 @@ const sendOne = async ({ userId, to, subject, body, storeId, contactId, campaign
   }
 };
 
-const sendBulk = async ({ userId, contacts, subject, body, delayMs = 500, campaignId }) => {
+const sendBulk = async ({ userId, contacts, subject, body, delayMs = 500, campaignId, accounts = [] }) => {
   const results = [];
 
   for (let index = 0; index < contacts.length; index += 1) {
@@ -176,6 +194,7 @@ const sendBulk = async ({ userId, contacts, subject, body, delayMs = 500, campai
         contactId: contact.id,
         campaignId,
         storeName: contact.store_name,
+        fromAccount: accounts.length ? accounts[index % accounts.length].email : undefined,
         data
       });
 
