@@ -4,10 +4,10 @@ const db = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const asyncHandler = require('../utils/asyncHandler');
 const { validate } = require('../utils/validation');
-const { normalizeUrl } = require('../utils/url');
+const { normalizeUrl, domainKeyFromUrl } = require('../utils/url');
 const { runPageSpeed } = require('../services/pagespeed.service');
 const { getApiKey } = require('../services/settings.service');
-const axios = require('axios');
+const { requestPublicUrl } = require('../utils/safeFetch');
 const cheerio = require('cheerio');
 
 
@@ -17,7 +17,8 @@ router.use(requireAuth);
 
 const isSiteAlive = async (url) => {
   try {
-    const res = await axios.head(url, {
+    const res = await requestPublicUrl(url, {
+      method: 'HEAD',
       timeout: 5000,
       maxRedirects: 3,
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; MILLTOPTECHBot/1.0)' }
@@ -25,7 +26,8 @@ const isSiteAlive = async (url) => {
     return res.status < 500;
   } catch {
     try {
-      const res = await axios.get(url, {
+      const res = await requestPublicUrl(url, {
+        method: 'GET',
         timeout: 5000,
         maxRedirects: 3,
         responseType: 'stream',
@@ -54,9 +56,9 @@ const scanSingleUrl = async (url, apiKey, userId) => {
     // silently skipping (ON CONFLICT DO NOTHING caused N/A on refresh).
     const { rows } = await db.query(
       `INSERT INTO stores (
-        user_id, url, mobile_performance, desktop_performance, mobile_seo, desktop_seo,
+        user_id, url, domain_key, mobile_performance, desktop_performance, mobile_seo, desktop_seo,
         mobile_best_practices, desktop_best_practices, mobile_accessibility, desktop_accessibility
-      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
       ON CONFLICT (user_id, url) DO UPDATE SET
         mobile_performance = EXCLUDED.mobile_performance,
         desktop_performance = EXCLUDED.desktop_performance,
@@ -66,10 +68,11 @@ const scanSingleUrl = async (url, apiKey, userId) => {
         desktop_best_practices = EXCLUDED.desktop_best_practices,
         mobile_accessibility = EXCLUDED.mobile_accessibility,
         desktop_accessibility = EXCLUDED.desktop_accessibility,
+        domain_key = EXCLUDED.domain_key,
         created_at = NOW()
       RETURNING *`,
       [
-        userId, url,
+        userId, url, domainKeyFromUrl(url),
         mobile.performance, desktop.performance,
         mobile.seo, desktop.seo,
         mobile.bestPractices, desktop.bestPractices,
@@ -83,6 +86,9 @@ const scanSingleUrl = async (url, apiKey, userId) => {
 };
 
 router.post('/scan',
+  body('urls').optional().isArray({ min: 1, max: 500 }),
+  body('urls.*').optional().isURL({ require_protocol: false }),
+  body('url').optional().isURL({ require_protocol: false }),
   body('urls').custom((value, { req }) => {
     const input = value || req.body.url;
     if (Array.isArray(input)) return input.length > 0 && input.every(Boolean);
@@ -126,16 +132,11 @@ router.post('/deep', body('url').isURL(), validate, asyncHandler(async (req, res
 // Returns ALL scanned stores — scanner tab shows everything.
 // Only the Email Sender tab filters sent stores (done on frontend).
 router.get('/results', asyncHandler(async (req, res) => {
-  try {
-    const { rows } = await db.query(
-      `SELECT * FROM stores WHERE user_id = $1 ORDER BY created_at DESC`,
-      [req.user.id]
-    );
-    res.json({ stores: rows });
-  } catch (err) {
-    console.error('Scanner Results Error:', err);
-    res.status(500).json({ message: err.message, stack: err.stack });
-  }
+  const { rows } = await db.query(
+    `SELECT * FROM stores WHERE user_id = $1 ORDER BY created_at DESC`,
+    [req.user.id]
+  );
+  res.json({ stores: rows });
 }));
 
 // Clear ALL scan results for this user permanently
