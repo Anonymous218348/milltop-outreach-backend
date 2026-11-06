@@ -1,6 +1,7 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const { normalizeUrl, domainFromUrl } = require('../utils/url');
+const { requestPublicUrl } = require('../utils/safeFetch');
 
 const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
 
@@ -49,7 +50,8 @@ const chooseBestEmail = (emails) => {
 
 const fetchPage = async (url) => {
   try {
-    const { data } = await axios.get(url, {
+    const { data } = await requestPublicUrl(url, {
+      method: 'GET',
       timeout: 10000,
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
@@ -110,7 +112,7 @@ const extractEmailsFromHtml = (html) => {
 // Detect site locale prefix from homepage
 const detectLocale = async (baseUrl) => {
   try {
-    const { request } = await axios.get(baseUrl, { timeout: 8000, maxRedirects: 5 });
+    const { request } = await requestPublicUrl(baseUrl, { method: 'GET', timeout: 8000, maxRedirects: 5 });
     const finalUrl = request.res?.responseUrl || '';
     const match = finalUrl.match(/\/([a-z]{2})(\/|$)/);
     return match ? match[1] : null;
@@ -122,7 +124,7 @@ const detectLocale = async (baseUrl) => {
 // Get sitemap pages
 const getSitemapPages = async (baseUrl) => {
   try {
-    const { data } = await axios.get(baseUrl + '/sitemap.xml', { timeout: 8000 });
+    const { data } = await requestPublicUrl(baseUrl + '/sitemap.xml', { method: 'GET', timeout: 8000 });
     const matches = data.match(/<loc>(.*?)<\/loc>/g) || [];
     return matches
       .map(m => m.replace(/<\/?loc>/g, '').trim())
@@ -146,7 +148,7 @@ const getSitemapPages = async (baseUrl) => {
 const getSecurityTxt = async (baseUrl) => {
   for (const path of ['/.well-known/security.txt', '/security.txt']) {
     try {
-      const { data } = await axios.get(baseUrl + path, { timeout: 5000 });
+      const { data } = await requestPublicUrl(baseUrl + path, { method: 'GET', timeout: 5000 });
       const emails = data.match(emailRegex) || [];
       if (emails.length) return emails;
     } catch {}
