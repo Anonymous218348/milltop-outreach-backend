@@ -6,25 +6,26 @@ const asyncHandler = require('../utils/asyncHandler');
 const { validate } = require('../utils/validation');
 const { findEmailForDomain } = require('../services/finder.service');
 const { getApiKey } = require('../services/settings.service');
-const { normalizeUrl } = require('../utils/url');
+const { normalizeUrl, domainKeyFromUrl } = require('../utils/url');
  
 const router = express.Router();
 router.use(requireAuth);
  
 const updateOrCreateStore = async (userId, domain, result) => {
   const url = normalizeUrl(domain);
+  const domainKey = domainKeyFromUrl(url);
  
   // Prefer the row that already has performance scores — this avoids
   // overwriting a scanned row's scores with a new empty row.
   // If multiple rows exist for the same URL, pick the one with scores first.
   const existing = await db.query(
     `SELECT * FROM stores 
-     WHERE user_id = $1 AND url = $2 
+     WHERE user_id = $1 AND (domain_key = $2 OR (domain_key IS NULL AND lower(regexp_replace(substring(url from '^https?://([^/:?#]+)'), '^www\\.', '')) = $2))
      ORDER BY 
        CASE WHEN mobile_performance IS NOT NULL THEN 0 ELSE 1 END,
        created_at DESC 
      LIMIT 1`,
-    [userId, url]
+    [userId, domainKey]
   );
  
   if (existing.rows[0]) {
@@ -39,9 +40,9 @@ const updateOrCreateStore = async (userId, domain, result) => {
     // Clean up any duplicate rows for this URL that have no scores
     await db.query(
       `DELETE FROM stores 
-       WHERE user_id = $1 AND url = $2 AND id != $3 
+       WHERE user_id = $1 AND domain_key = $2 AND id != $3
        AND mobile_performance IS NULL AND desktop_performance IS NULL`,
-      [userId, url, existing.rows[0].id]
+      [userId, domainKey, existing.rows[0].id]
     );
  
     return rows[0];
@@ -49,10 +50,10 @@ const updateOrCreateStore = async (userId, domain, result) => {
  
   // No existing row — create one
   const { rows } = await db.query(
-    `INSERT INTO stores (user_id, url, contact_email, email_source, email_status, flagged)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO stores (user_id, url, domain_key, contact_email, email_source, email_status, flagged)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING *`,
-    [userId, url, result.email, result.source, result.status, result.flagged]
+    [userId, url, domainKey, result.email, result.source, result.status, result.flagged]
   );
   return rows[0];
 };
@@ -69,7 +70,7 @@ router.post('/find',
 );
  
 router.post('/bulk',
-  body('domains').isArray({ min: 1 }),
+  body('domains').isArray({ min: 1, max: 100 }),
   body('domains.*').notEmpty(),
   validate,
   asyncHandler(async (req, res) => {
