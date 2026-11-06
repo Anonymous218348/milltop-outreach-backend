@@ -5,7 +5,7 @@ const { requireAuth } = require('../middleware/auth');
 const asyncHandler = require('../utils/asyncHandler');
 const { validate } = require('../utils/validation');
 const { personalize, sendOne, sendBulk } = require('../services/email.service');
-const { HttpError } = require('../utils/httpError');
+const { getGmailAccounts } = require('../services/settings.service');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -33,24 +33,27 @@ router.post('/send',
       contactId: req.body.contactId,
       campaignId: req.body.campaignId,
       storeName: req.body.storeName || null,
+      fromAccount: req.body.fromAccount,
     });
     res.json({ log });
   })
 );
 
 router.post('/bulk',
-  body('contacts').isArray({ min: 1 }),
+  body('contacts').isArray({ min: 1, max: 500 }),
   body('subject').notEmpty(),
   body('body').notEmpty(),
   body('delayMs').optional().isInt({ min: 0 }),
   validate,
   asyncHandler(async (req, res) => {
+    const accounts = await getGmailAccounts(req.user.id);
     const results = await sendBulk({
       userId: req.user.id,
       contacts: req.body.contacts,
       subject: req.body.subject,
       body: req.body.body,
       delayMs: req.body.delayMs || 500,
+      accounts,
       campaignId: req.body.campaignId
     });
     res.json({ results });
@@ -80,14 +83,15 @@ router.post('/log',
   validate,
   asyncHandler(async (req, res) => {
     const { rows } = await db.query(
-      `INSERT INTO email_logs (user_id, subject, status, store_name, provider, sent_at)
-       VALUES ($1, $2, $3, $4, $5, NOW())
+      `INSERT INTO email_logs (user_id, subject, status, store_name, to_email, provider, sent_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW())
        RETURNING *`,
       [
         req.user.id,
         req.body.subject,
-        req.body.status || 'Sent',
+        (req.body.status || 'sent').toLowerCase(),
         req.body.storeName || null,
+        req.body.toEmail,
         req.body.provider || null
       ]
     );
