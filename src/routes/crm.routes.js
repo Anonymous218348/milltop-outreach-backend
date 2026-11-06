@@ -40,11 +40,16 @@ router.post('/:id/notes',
   body('note').notEmpty(),
   validate,
   asyncHandler(async (req, res) => {
+    const { rows: currentRows } = await db.query(
+      'SELECT notes FROM contacts WHERE id=$1 AND user_id=$2',
+      [req.params.id, req.user.id]
+    );
+    if (!currentRows[0]) return res.json({ contact: null });
+    const notes = Array.isArray(currentRows[0].notes) ? currentRows[0].notes : [];
+    notes.push({ text: req.body.note, ts: new Date().toISOString() });
     const { rows } = await db.query(
-      `UPDATE contacts
-       SET notes = CONCAT(COALESCE(notes, ''), CASE WHEN COALESCE(notes, '') = '' THEN '' ELSE E'\n' END, $1)
-       WHERE id=$2 AND user_id=$3 RETURNING *`,
-      [req.body.note, req.params.id, req.user.id]
+      'UPDATE contacts SET notes=$1::jsonb WHERE id=$2 AND user_id=$3 RETURNING *',
+      [JSON.stringify(notes), req.params.id, req.user.id]
     );
     res.json({ contact: rows[0] || null });
   })
