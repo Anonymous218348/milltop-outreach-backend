@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const db = require('../db');
-const { pollReplies } = require('../services/gmail.service');
+const { pollReplies } = require('../services/gmail.service.js');
+const { runScheduledCampaigns } = require('../services/campaignRunner.service');
 
 const startReplyPoller = () => {
   // Run every 5 minutes
@@ -23,7 +24,15 @@ const startReplyPoller = () => {
     }
   });
 
-  console.log('[ReplyPoller] Started — polling every 5 minutes');
+  cron.schedule('* * * * *', async () => {
+    try {
+      await runScheduledCampaigns();
+    } catch (err) {
+      console.error('[CampaignRunner] Scheduler error:', err.message);
+    }
+  });
+
+  console.log('[ReplyPoller] Started — polling every 5 minutes; scheduled campaigns checked every minute');
 };
 
 module.exports = { startReplyPoller };
