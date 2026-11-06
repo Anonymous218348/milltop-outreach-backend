@@ -9,11 +9,14 @@ const { runPageSpeed } = require('../services/pagespeed.service');
 const { findEmailForDomain } = require('../services/finder.service');
 const { getApiKey, getSettings } = require('../services/settings.service');
 const { runDeepAudit } = require('../services/deep-audit.service');
+const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
 const BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const ALLOWED_USER_ID = parseInt(process.env.TELEGRAM_USER_ID, 10);
+const TELEGRAM_ACCOUNT_EMAIL = process.env.TELEGRAM_ACCOUNT_EMAIL;
+const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET || '';
 const API_URL = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
 // Escape Telegram legacy-Markdown special characters in dynamic/scraped text
@@ -44,9 +47,12 @@ const sendMessage = async (chatId, text, options = {}) => {
   }
 };
 
-// Get user from DB by telegram user id (use first user for now since app is single-user)
+// This bot token is configured for one Telegram operator. Bind it to an
+// explicit account so multi-user deployments never operate on an arbitrary user.
 const getUser = async () => {
-  const { rows } = await db.query('SELECT * FROM users LIMIT 1');
+  if (!TELEGRAM_ACCOUNT_EMAIL) throw new Error('Telegram bot account is not configured');
+  const { rows } = await db.query('SELECT * FROM users WHERE lower(email)=lower($1) LIMIT 1', [TELEGRAM_ACCOUNT_EMAIL]);
+  if (!rows[0]) throw new Error('Configured Telegram account was not found');
   return rows[0] || null;
 };
 
@@ -534,7 +540,12 @@ const handleAI = async (chatId, question) => {
 };
 
 // ── WEBHOOK ENDPOINT ──────────────────────────────────────────────
-router.post('/webhook', asyncHandler(async (req, res) => {
+router.post('/webhook', (req, res, next) => {
+  if (!WEBHOOK_SECRET || req.get('x-telegram-bot-api-secret-token') !== WEBHOOK_SECRET) {
+    return res.sendStatus(401);
+  }
+  next();
+}, asyncHandler(async (req, res) => {
   res.sendStatus(200); // Always respond to Telegram immediately
   const { message } = req.body;
   if (message) {
@@ -543,9 +554,12 @@ router.post('/webhook', asyncHandler(async (req, res) => {
 }));
 
 // ── SET WEBHOOK ───────────────────────────────────────────────────
-router.get('/setup', asyncHandler(async (req, res) => {
+router.get('/setup', requireAuth, asyncHandler(async (req, res) => {
+  if (!WEBHOOK_SECRET) {
+    return res.status(503).json({ message: 'Set TELEGRAM_WEBHOOK_SECRET before configuring the webhook' });
+  }
   const webhookUrl = `${process.env.APP_URL}/api/telegram/webhook`;
-  const { data } = await axios.post(`${API_URL}/setWebhook`, { url: webhookUrl });
+  const { data } = await axios.post(`${API_URL}/setWebhook`, { url: webhookUrl, secret_token: WEBHOOK_SECRET });
   res.json(data);
 }));
 
