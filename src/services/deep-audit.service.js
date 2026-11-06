@@ -1,4 +1,4 @@
-const axios = require('axios');
+const { requestPublicUrl } = require('../utils/safeFetch');
 const cheerio = require('cheerio');
 const { normalizeUrl } = require('../utils/url');
 
@@ -37,7 +37,8 @@ const runDeepAudit = async (inputUrl) => {
     seen.add(pageUrl);
 
     try {
-      const response = await axios.get(pageUrl, {
+      const response = await requestPublicUrl(pageUrl, {
+        method: 'GET',
         timeout: 8000,
         maxRedirects: 4,
         maxContentLength: MAX_RESPONSE_BYTES,
