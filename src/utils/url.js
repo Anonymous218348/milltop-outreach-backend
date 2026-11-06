@@ -6,7 +6,9 @@ const normalizeUrl = (value) => {
 
 const domainFromUrl = (value) => {
   const parsed = new URL(normalizeUrl(value));
-  return parsed.hostname.replace(/^www\./i, '');
+  return parsed.hostname.toLowerCase().replace(/^www\./i, '');
 };
 
-module.exports = { normalizeUrl, domainFromUrl };
+const domainKeyFromUrl = (value) => domainFromUrl(value);
+
+module.exports = { normalizeUrl, domainFromUrl, domainKeyFromUrl };
