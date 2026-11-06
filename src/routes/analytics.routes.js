@@ -12,7 +12,7 @@ router.get('/overview', asyncHandler(async (req, res) => {
       (SELECT COUNT(*)::int FROM stores WHERE user_id=$1) AS total_stores_scanned,
       (SELECT COUNT(*)::int FROM email_logs WHERE user_id=$1 AND status='sent') AS emails_sent,
       (SELECT COUNT(*)::int FROM email_logs WHERE user_id=$1 AND replied_at IS NOT NULL) AS replies,
-      (SELECT COUNT(*)::int FROM contacts WHERE user_id=$1 AND outreach_stage IN ('converted','closed','won')) AS conversions`,
+      (SELECT COUNT(*)::int FROM contacts WHERE user_id=$1 AND lower(outreach_stage) IN ('converted','closed','won')) AS conversions`,
     [req.user.id]
   );
   const overview = rows[0];
