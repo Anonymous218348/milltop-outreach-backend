@@ -16,6 +16,13 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: 'Too many authentication attempts. Please try again later.' }
 });
+const appealLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many appeal attempts. Please try again later.' }
+});
 
 const tokenFor = (user) => jwt.sign(
   { sub: user.id, email: user.email },
@@ -69,7 +76,7 @@ router.post('/login', authLimiter,
     const countryCode = process.env.TRUST_CLOUDFLARE_IP_COUNTRY === 'true'
       ? String(req.get('cf-ipcountry') || '').toUpperCase().match(/^[A-Z]{2}$/)?.[0] || null
       : null;
-    const { rows } = await db.query('SELECT id, email, password, created_at, role, account_status FROM users WHERE email = $1', [email]);
+    const { rows } = await db.query('SELECT id, email, password, created_at, role, account_status, suspension_reason FROM users WHERE email = $1', [email]);
     const user = rows[0];
     if (!user || !(await bcrypt.compare(password, user.password))) {
       await db.query(
@@ -85,7 +92,10 @@ router.post('/login', authLimiter,
          VALUES ($1, $2, 'login', $3, FALSE, 'suspended account')`,
         [user.id, email, req.ip || null]
       );
-      throw new HttpError(403, 'This account is suspended. Contact support if you believe this is a mistake.');
+      throw new HttpError(403, 'This account is suspended.', {
+        code: 'ACCOUNT_SUSPENDED',
+        reason: user.suspension_reason || 'Your account was suspended after a review of activity that may have violated our policies.'
+      });
     }
     await db.query('UPDATE users SET last_login_at = NOW(), last_login_ip = $2, last_login_country = $3 WHERE id = $1', [user.id, req.ip || null, countryCode]);
     await db.query(
@@ -95,6 +105,28 @@ router.post('/login', authLimiter,
     );
     delete user.password;
     res.json({ user, token: tokenFor(user) });
+  })
+);
+
+router.post('/appeals', appealLimiter,
+  body('email').isEmail().normalizeEmail(),
+  body('message').isString().trim().isLength({ min: 20, max: 2000 }),
+  validate,
+  asyncHandler(async (req, res) => {
+    const email = req.body.email;
+    const message = req.body.message.trim();
+    const { rows } = await db.query(
+      "SELECT id FROM users WHERE lower(email)=lower($1) AND account_status='suspended'",
+      [email]
+    );
+    if (rows[0]) {
+      await db.query(
+        `INSERT INTO account_appeals(user_id,email,message) VALUES($1,$2,$3)`,
+        [rows[0].id, email, message]
+      );
+    }
+    // Keep the response identical for unknown and suspended email addresses.
+    res.status(202).json({ message: 'If this email belongs to a suspended account, your appeal has been sent for review.' });
   })
 );
 
