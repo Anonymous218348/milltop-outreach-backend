@@ -90,6 +90,8 @@ router.post('/users/:id/suspend', param('id').isUUID(), body('reason').isString(
       await client.query("UPDATE users SET account_status='suspended', suspended_at=NOW(), suspension_reason=$2 WHERE id=$1", [account.id, req.body.reason]);
       await client.query(`INSERT INTO admin_audit_logs (actor_user_id, target_user_id, action, reason, metadata)
         VALUES ($1,$2,'account.suspend',$3,jsonb_build_object('email',$4::text))`, [req.user.id, account.id, req.body.reason, account.email]);
+      await client.query(`INSERT INTO user_notifications(user_id,kind,title,message)
+        VALUES($1,'security','Account suspended',$2)`, [account.id, req.body.reason]);
       return account;
     });
     res.json({ ok: true, message: 'Account suspended' });
@@ -104,6 +106,8 @@ router.post('/users/:id/restore', param('id').isUUID(), body('reason').optional(
       await client.query("UPDATE users SET account_status='active', suspended_at=NULL, suspension_reason=NULL WHERE id=$1", [req.params.id]);
       await client.query(`INSERT INTO admin_audit_logs (actor_user_id,target_user_id,action,reason,metadata)
         VALUES ($1,$2,'account.restore',$3,jsonb_build_object('email',$4::text))`, [req.user.id, req.params.id, req.body.reason || '', rows[0].email]);
+      await client.query(`INSERT INTO user_notifications(user_id,kind,title,message)
+        VALUES($1,'security','Account restored','An administrator restored your account. You can sign in again.')`, [req.params.id]);
     });
     res.json({ ok: true, message: 'Account restored' });
   })
@@ -154,6 +158,8 @@ router.post('/appeals/:id/resolve', param('id').isUUID(),
       await client.query(`INSERT INTO admin_audit_logs(actor_user_id,target_user_id,action,reason,metadata)
         VALUES($1,$2,$3,$4,jsonb_build_object('email',$5::text,'appeal_id',$6::text))`,
         [req.user.id, appeal.user_id, `account.appeal.${status}`, req.body.resolution.trim(), appeal.email, appeal.id]);
+      await client.query(`INSERT INTO user_notifications(user_id,kind,title,message)
+        VALUES($1,'security',$2,$3)`, [appeal.user_id, status === 'restored' ? 'Account restored' : 'Appeal reviewed', req.body.resolution.trim()]);
     });
     res.json({ ok: true, status });
   })
