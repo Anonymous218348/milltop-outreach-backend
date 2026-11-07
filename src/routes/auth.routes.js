@@ -7,6 +7,7 @@ const db = require('../db');
 const asyncHandler = require('../utils/asyncHandler');
 const { validate } = require('../utils/validation');
 const { HttpError } = require('../utils/httpError');
+const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 const authLimiter = rateLimit({
@@ -29,6 +30,20 @@ const tokenFor = (user) => jwt.sign(
   process.env.JWT_SECRET,
   { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
 );
+
+// Lightweight status endpoint polled by an open dashboard so admin suspension
+// takes effect without requiring the user to refresh or make another action.
+router.get('/session', requireAuth, (req, res) => {
+  res.json({ user: { id: req.user.id, email: req.user.email, role: req.user.role } });
+});
+
+router.get('/notifications', requireAuth, asyncHandler(async (req, res) => {
+  const { rows } = await db.query(
+    'SELECT id,kind,title,message,created_at,read_at FROM user_notifications WHERE user_id=$1 ORDER BY created_at DESC LIMIT 30',
+    [req.user.id]
+  );
+  res.json({ notifications: rows });
+}));
 
 router.post('/register', authLimiter,
   body('email').isEmail().normalizeEmail(),
