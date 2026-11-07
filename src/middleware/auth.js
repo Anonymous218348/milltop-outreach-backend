@@ -18,12 +18,16 @@ const requireAuth = asyncHandler(async (req, _res, next) => {
     throw new HttpError(401, 'Invalid or expired token');
   }
 
-  const { rows } = await db.query('SELECT id, email, created_at, role, account_status FROM users WHERE id = $1', [payload.sub]);
+  const { rows } = await db.query('SELECT id, email, created_at, role, account_status, suspension_reason FROM users WHERE id = $1', [payload.sub]);
   if (!rows[0]) {
     throw new HttpError(401, 'User not found');
   }
   if (rows[0].account_status !== 'active') {
-    throw new HttpError(403, 'This account is suspended. Contact support if you believe this is a mistake.');
+    throw new HttpError(403, 'This account is suspended.', {
+      code: 'ACCOUNT_SUSPENDED',
+      email: rows[0].email,
+      reason: rows[0].suspension_reason || 'Your account was suspended after a review of activity that may have violated our policies.'
+    });
   }
 
   req.user = rows[0];
