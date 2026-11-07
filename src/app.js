@@ -48,7 +48,10 @@ app.use(express.json({
   verify: (req, _res, buffer) => { req.rawBody = Buffer.from(buffer); }
 }));
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
-app.set('trust proxy', 1);
+// Render places the service behind a managed proxy chain. Trust the forwarded
+// client address supplied by that platform so req.ip does not record an
+// internal 10.x proxy address. Do not reuse this setting on an untrusted host.
+app.set('trust proxy', true);
 app.use(rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 500,
